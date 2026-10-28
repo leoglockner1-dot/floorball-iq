@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0B0D10">
+<title>Shot Tracker</title>
+<style>
+/* Layout: one full-screen stage (video + overlay) shared by setup and live tracking; start and result are scrolling sheets. */
+@font-face { font-family: "Barlow Condensed"; font-weight: 800; src: url("fonts/BarlowCondensed_800ExtraBold.ttf") format("truetype"); font-display: swap; }
+@font-face { font-family: "Barlow Condensed"; font-weight: 900; src: url("fonts/BarlowCondensed_900Black.ttf") format("truetype"); font-display: swap; }
+:root {
+  /* Same tokens as the FLOORBALL IQ app (src/ui/theme.ts). Single dark look on purpose: used in halls, next to a camera image. */
+  --bg: #0B0D10; --surface: #14171C; --raised: #1B1F26; --line: #272C35;
+  --text: #F2F4F7; --dim: #9AA3AE; --faint: #7A8491;
+  --accent: #D4FF3A; --on-accent: #0B0D10; --danger: #FF5A4E; --warn: #F7C915;
+  --display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 var(--body); }
+body { overscroll-behavior: none; }
+button, input, select { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.eyebrow { font: 800 14px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+h1 { font: 900 44px/0.95 var(--display); margin: 6px 0 0; text-transform: uppercase; text-wrap: balance; }
+h2 { font: 800 24px/1.1 var(--display); margin: 0; text-transform: uppercase; letter-spacing: .02em; }
+p { margin: 0; }
+.dim { color: var(--dim); }
+.small { font-size: 14px; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 0 18px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--raised); font: 800 19px/1 var(--display);
+  letter-spacing: .04em; text-transform: uppercase; cursor: pointer; user-select: none; }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.btn.danger { color: var(--danger); }
+.btn.small { min-height: 40px; padding: 0 12px; font-size: 16px; }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font: 800 13px/1.2 var(--display);
+  letter-spacing: .08em; text-transform: uppercase; border: 1px solid var(--line); background: rgba(11,13,16,.75); }
+.pill.estimate { color: var(--warn); border-color: rgba(247,201,21,.45); }
+.pill.bad { color: var(--danger); border-color: rgba(255,90,78,.5); }
+.pill.ok { color: var(--accent); border-color: rgba(212,255,58,.4); }
+
+/* ---------- Sheets (start, result) ---------- */
+.sheet { min-height: 100%; padding-block: max(20px, env(safe-area-inset-top)) max(28px, env(safe-area-inset-bottom));
+  padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+.sheet-inner { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.field { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.field label { font-weight: 600; }
+.stepper { display: inline-flex; align-items: center; gap: 4px; }
+.stepper input { width: 72px; height: 48px; text-align: center; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  font: 900 26px/1 var(--display); font-variant-numeric: tabular-nums; }
+.stepper .btn { width: 48px; padding: 0; font-size: 24px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { min-height: 44px; padding: 0 14px; background: var(--bg); border: 0; font: 800 16px/1 var(--display); letter-spacing: .05em; text-transform: uppercase; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.actions { display: flex; flex-direction: column; gap: 10px; }
+.tips { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--dim); font-size: 15px; }
+.tips b { color: var(--text); font-weight: 600; }
+.note { font-size: 14px; color: var(--dim); border-left: 3px solid var(--warn); padding-left: 10px; }
+.hidden-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+/* ---------- Stage (setup + live) ---------- */
+#stage { position: fixed; inset: 0; background: #000; overflow: hidden; touch-action: none; }
+#video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+#overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+.hud { position: absolute; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+.hud-top { top: 0; left: 0; right: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+  padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); }
+.hud-bottom { bottom: 0; left: 0; right: 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px;
+  padding: 0 max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+.hud .btn { background: rgba(27,31,38,.86); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.hud .btn.primary { background: var(--accent); }
+.instruct { background: rgba(11,13,16,.85); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; max-width: 520px; }
+.instruct strong { display: block; font: 900 24px/1.05 var(--display); text-transform: uppercase; }
+.instruct span { font-size: 14px; color: var(--dim); }
+.status { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+
+.counter { background: rgba(11,13,16,.82); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px 10px; min-width: 132px; }
+.counter .big { font: 900 64px/0.9 var(--display); font-variant-numeric: tabular-nums; color: var(--accent); }
+.counter .of { font: 800 17px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--dim); margin-top: 4px; }
+.flash { animation: flash .6s ease-out; }
+@keyframes flash { 0% { background: var(--accent); } 100% { background: rgba(11,13,16,.82); } }
+@media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
+.zones { display: grid; grid-template-columns: repeat(3, 26px); gap: 2px; padding: 4px; background: rgba(11,13,16,.82); border: 1px solid var(--line); border-radius: 6px; }
+.zones div { height: 20px; display: grid; place-items: center; font: 800 14px/1 var(--display); background: var(--raised); border-radius: 3px; font-variant-numeric: tabular-nums; }
+
+.confirm { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(max(10px, env(safe-area-inset-bottom)) + 62px);
+  display: flex; gap: 12px; align-items: center; background: var(--surface); border: 1px solid var(--warn); border-radius: 10px; padding: 10px;
+  width: min(520px, calc(100% - 24px)); }
+.confirm img { width: 112px; height: auto; border-radius: 6px; flex: none; }
+.confirm .q { flex: 1; min-width: 0; }
+.confirm .q strong { display: block; font: 900 22px/1.05 var(--display); text-transform: uppercase; }
+.confirm .q span { font-size: 13px; color: var(--dim); }
+.confirm .yn { display: flex; flex-direction: column; gap: 6px; }
+
+.debug { position: absolute; left: max(12px, env(safe-area-inset-left)); bottom: calc(max(10px, env(safe-area-inset-bottom)) + 62px);
+  background: rgba(11,13,16,.9); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 6px; width: 250px; }
+.debug input[type=range] { width: 100%; accent-color: var(--accent); }
+.debug code { font-size: 12px; color: var(--dim); white-space: pre-wrap; }
+
+/* ---------- Result ---------- */
+.score { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.score div { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.score b { display: block; font: 900 48px/0.95 var(--display); font-variant-numeric: tabular-nums; }
+.score span { font: 800 14px/1 var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.score .goals b { color: var(--accent); }
+.zone-big { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; border: 4px solid #E5322D; border-bottom: 0; border-radius: 4px 4px 0 0; padding: 4px; aspect-ratio: 160 / 115; width: 100%; max-width: 380px; margin: 0 auto; }
+.zone-big div { display: grid; place-items: center; align-content: center; background: var(--raised); border-radius: 3px; font: 900 34px/1 var(--display); font-variant-numeric: tabular-nums; }
+.zone-big div small { display: block; font: 600 11px/1.2 var(--body); color: var(--dim); text-transform: none; }
+.events { display: flex; flex-direction: column; gap: 8px; }
+.ev { display: grid; grid-template-columns: 112px 1fr; gap: 8px 12px; align-items: start; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.ev img { width: 112px; border-radius: 5px; }
+.ev .yn { grid-column: 1 / -1; display: flex; gap: 8px; }
+.ev .yn .btn { flex: 1; }
+.ev .txt { flex: 1; min-width: 0; font-size: 14px; }
+.ev .txt b { display: block; font: 800 18px/1.1 var(--display); text-transform: uppercase; letter-spacing: .03em; }
+.ev.wrong { opacity: .55; }
+.ev.wrong .txt b { text-decoration: line-through; }
+.acc { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-variant-numeric: tabular-nums; }
+.acc .v { font: 900 22px/1 var(--display); text-align: right; }
+.acc .v.pass { color: var(--accent); } .acc .v.fail { color: var(--danger); }
+textarea#summary { width: 100%; min-height: 140px; background: var(--bg); color: var(--dim); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 12px/1.4 ui-monospace, Menlo, monospace; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.row .btn { flex: 1 1 160px; }
+.err { color: var(--danger); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- ============ START ============ -->
+<section id="screen-start" class="sheet">
+  <div class="sheet-inner">
+    <header>
+      <a class="eyebrow" href="../" style="text-decoration:none">← Floorball IQ · prototype</a>
+      <h1>Shot Tracker</h1>
+      <p class="dim" style="margin-top:8px">Counts goals and the zone they went in, live from the phone camera. Misses = shots − goals.</p>
+      <p style="margin-top:10px"><span class="pill estimate">Camera estimate · not yet validated</span></p>
+    </header>
+
+    <div class="card">
+      <div class="field">
+        <label for="shots">Shots in this round</label>
+        <div class="stepper">
+          <button class="btn" type="button" data-step="-1" aria-label="One shot less">−</button>
+          <input id="shots" type="number" inputmode="numeric" min="1" max="500" value="20">
+          <button class="btn" type="button" data-step="1" aria-label="One shot more">+</button>
+        </div>
+      </div>
+      <div class="field">
+        <span id="colour-label" style="font-weight:600">Ball colour</span>
+        <div class="seg" role="group" aria-labelledby="colour-label">
+          <button type="button" id="col-white" aria-pressed="true">White</button>
+          <button type="button" id="col-other" aria-pressed="false">Other colour</button>
+        </div>
+      </div>
+      <p class="small dim" id="col-hint">White ball: works best against a darker background.</p>
+      <div class="field">
+        <span id="grid-label" style="font-weight:600">Goal zones</span>
+        <div class="seg" role="group" aria-labelledby="grid-label">
+          <button type="button" id="grid-2" aria-pressed="true">3 × 2</button>
+          <button type="button" id="grid-3" aria-pressed="false">3 × 3</button>
+        </div>
+      </div>
+      <p class="small dim" id="grid-hint"></p>
+    </div>
+
+    <div class="actions">
+      <button class="btn primary" id="btn-camera" type="button">Start camera</button>
+      <button class="btn" id="btn-file" type="button">Analyse a video file</button>
+      <input class="hidden-file" id="file" type="file" accept="video/*" tabindex="-1" aria-hidden="true">
+      <button class="btn" id="btn-demo" type="button">Try the demo scene</button>
+      <p class="err" id="start-error" hidden></p>
+    </div>
+
+    <div class="card">
+      <h2>Set up</h2>
+      <ol class="tips">
+        <li><b>Phone on a stand, landscape,</b> behind and a little to the side of where you shoot, about hip to shoulder height.</li>
+        <li><b>Whole goal in view</b> with about one goal-width of space around it. The stand must not move.</li>
+        <li>Mark the <b>4 inner corners</b> of the goal opening once.</li>
+        <li>Shoot <b>at least 2 seconds apart.</b> Dark shoes help (white shoes can look like a ball).</li>
+        <li>Keep the page open and the phone plugged in. The screen stays on while tracking.</li>
+      </ol>
+      <p class="note">Runs only on this phone. Nothing is uploaded and no video is saved. A few still images of unsure shots stay in memory until you close the page.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STAGE (calibrate + live) ============ -->
+<section id="stage" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+
+  <!-- calibrate -->
+  <div class="hud hud-top" id="calib-top">
+    <div class="instruct" role="status" aria-live="polite">
+      <strong id="calib-title">Tap the top-left corner</strong>
+      <span id="calib-sub">Inner corner of the goal opening. Step 1 of 4. Drag a dot to adjust.</span>
+    </div>
+    <div class="status"><span class="pill estimate">Camera estimate</span><span class="pill" id="calib-fps">— fps</span></div>
+  </div>
+  <div class="hud hud-bottom" id="calib-bottom">
+    <button class="btn" id="calib-back" type="button">Back</button>
+    <button class="btn" id="calib-undo" type="button">Undo</button>
+    <button class="btn" id="calib-last" type="button" hidden>Use last corners</button>
+    <button class="btn" id="calib-ball" type="button" hidden>Tap the ball again</button>
+    <button class="btn primary" id="calib-start" type="button" disabled>Start tracking</button>
+  </div>
+
+  <!-- live -->
+  <div class="hud hud-top" id="live-top" hidden>
+    <div style="display:flex;gap:8px;align-items:flex-start">
+      <div class="counter" id="counter" aria-live="polite">
+        <div class="big" id="live-goals">0</div>
+        <div class="of" id="live-of">goals · 20 shots</div>
+      </div>
+      <div class="zones" id="live-zones" aria-label="Goals per zone"></div>
+    </div>
+    <div class="status">
+      <span class="pill estimate">Camera estimate</span>
+      <span class="pill ok" id="live-state">Tracking</span>
+      <span class="pill" id="live-fps">— fps</span>
+    </div>
+  </div>
+  <div class="hud hud-bottom" id="live-bottom" hidden>
+    <button class="btn small" id="live-minus" type="button" aria-label="Remove last goal (it was not a goal)">−1 goal</button>
+    <button class="btn small" id="live-plus" type="button" aria-label="Add a goal the camera missed">+1 goal</button>
+    <button class="btn small" id="live-pause" type="button">Pause</button>
+    <button class="btn small" id="live-debug" type="button" aria-pressed="false">Debug</button>
+    <button class="btn small" id="live-recal" type="button" hidden>Re-mark corners</button>
+    <button class="btn small primary" id="live-finish" type="button">Finish</button>
+  </div>
+  <div class="confirm" id="confirm" hidden role="alertdialog" aria-labelledby="confirm-q">
+    <img id="confirm-img" alt="Still image of the unsure shot">
+    <div class="q"><strong id="confirm-q">Goal?</strong><span id="confirm-why"></span></div>
+    <div class="yn">
+      <button class="btn small primary" id="confirm-yes" type="button">Yes, goal</button>
+      <button class="btn small" id="confirm-no" type="button">No</button>
+    </div>
+  </div>
+  <div class="debug" id="debug" hidden>
+    <label for="sens">Sensitivity <b id="sens-val">20</b> <span class="dim">(lower = finds fainter balls, more noise)</span></label>
+    <input id="sens" type="range" min="8" max="45" step="1" value="20">
+    <code id="debug-info"></code>
+  </div>
+</section>
+
+<!-- ============ RESULT ============ -->
+<section id="screen-result" class="sheet" hidden>
+  <div class="sheet-inner">
+    <header>
+      <div class="eyebrow" id="res-when">Round</div>
+      <h1>Result</h1>
+      <p style="margin-top:10px"><span class="pill estimate">Camera estimate · not yet validated</span></p>
+    </header>
+    <div class="score">
+      <div class="goals"><b id="res-goals">0</b><span>Goals</span></div>
+      <div><b id="res-misses">0</b><span>Misses</span></div>
+      <div><b id="res-rate">0%</b><span>Scored</span></div>
+    </div>
+    <p class="small dim" id="res-line"></p>
+
+    <div class="card">
+      <div class="field"><h2>Where the goals went in</h2>
+        <div class="seg" role="group" aria-label="Goal zones">
+          <button type="button" id="rgrid-2" aria-pressed="true">3 × 2</button>
+          <button type="button" id="rgrid-3" aria-pressed="false">3 × 3</button>
+        </div>
+      </div>
+      <p class="small dim">Seen from the shooter. Goals you added by hand have no zone. You can switch the grid after the round.</p>
+      <div class="zone-big" id="res-zones"></div>
+    </div>
+
+    <div class="card">
+      <h2>Check the camera</h2>
+      <p class="small dim">For the accuracy test: tap a goal that was not a goal. Add goals the camera did not see.</p>
+      <div class="events" id="res-events"></div>
+      <div class="field">
+        <label for="missed">Goals the camera missed</label>
+        <div class="stepper">
+          <button class="btn" type="button" data-mstep="-1" aria-label="One less">−</button>
+          <input id="missed" type="number" inputmode="numeric" min="0" max="500" value="0">
+          <button class="btn" type="button" data-mstep="1" aria-label="One more">+</button>
+        </div>
+      </div>
+      <div class="acc" id="res-acc"></div>
+    </div>
+
+    <div class="card">
+      <h2>Summary</h2>
+      <p class="small dim">Copy it and paste it into the chat with Claude.</p>
+      <textarea id="summary" readonly aria-label="Summary text"></textarea>
+      <button class="btn" id="btn-copy" type="button">Copy summary</button>
+    </div>
+
+    <div class="row">
+      <button class="btn primary" id="btn-again" type="button">New round, same corners</button>
+      <button class="btn" id="btn-home" type="button">Back to start</button>
+    </div>
+  </div>
+</section>
+
+<script src="tracker-core.js"></script>
+<script src="scene-sim.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
